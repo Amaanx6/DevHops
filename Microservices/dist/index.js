@@ -64,6 +64,14 @@ app.post("/reset", (req, res) => {
         status: "service reset",
     });
 });
+app.get("/test-log", (req, res) => {
+    console.log("TEST log fired", new Date().toISOString());
+    res.json({ ok: true });
+});
+app.get("/inject-error", (req, res) => {
+    console.error("DB CONNECTION FAILED");
+    throw new Error("Simulated crash");
+});
 const PORT = 8002;
 app.listen(PORT, () => {
     console.log(`payments-service running on http://localhost:${PORT}`);

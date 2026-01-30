@@ -76,6 +76,17 @@ app.post("/reset", (req, res) => {
   });
 });
 
+app.get("/test-log", (req, res) => {
+  console.log("TEST log fired", new Date().toISOString());
+  res.json({ ok: true });
+});
+
+app.get("/inject-error", (req, res) => {
+  console.error("DB CONNECTION FAILED");
+  throw new Error("Simulated crash");
+});
+
+
 
 const PORT = 8002;
 
