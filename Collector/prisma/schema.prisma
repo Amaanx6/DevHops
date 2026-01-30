@@ -18,6 +18,7 @@ model Service {
   metrics   Metric[]
   deploys   DeployEvent[]
   anomalies Anomaly[]
+  logs LogEvent[]
 }
 
 model Anomaly {
@@ -53,6 +54,7 @@ model DeployEvent {
 
   service Service         @relation(fields: [serviceId], references: [id])
   causes  AnomalyCause[]
+  logs LogEvent[]
 }
 
 model AnomalyCause {
@@ -65,4 +67,41 @@ model AnomalyCause {
 
   anomaly     Anomaly     @relation(fields: [anomalyId], references: [id])
   deployEvent DeployEvent @relation(fields: [deployId], references: [id])
+}
+
+model LogEvent {
+  id         Int      @id @default(autoincrement())
+
+  // ownership
+  serviceId Int
+  deployId  Int?
+
+  // cloud / platform
+  provider  String   // vercel | aws | azure | gcp | k8s
+  source    String   // runtime | build | deploy | infra
+
+  // classification
+  level     String   // info | warn | error | fatal | debug
+  message   String
+
+  // tracing / request linking
+  traceId   String?
+  requestId String?
+
+  // time
+  timestamp DateTime
+
+  // raw provider payload
+  raw       Json?
+
+  createdAt DateTime @default(now())
+
+  service Service @relation(fields: [serviceId], references: [id])
+  deploy  DeployEvent? @relation(fields: [deployId], references: [id])
+
+  @@index([serviceId, timestamp])
+  @@index([deployId])
+  @@index([level])
+  @@index([traceId])
+  @@index([provider, source])
 }
