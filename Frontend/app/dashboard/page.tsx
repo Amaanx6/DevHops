@@ -53,7 +53,7 @@ interface RawMetricPoint {
 interface Anomaly {
   id: string;
   serviceId: string;
-  type: 'latency_spike' | 'error_rate' | 'memory_leak' | 'cpu_saturation';
+  type: 'latency_spike' | 'error_rate' | 'memory_leak' | 'cpu_saturation' | 'resource_forecast';
   severity: 'low' | 'medium' | 'high' | 'critical';
   detectedAt: string;
   resolved: boolean;
@@ -61,6 +61,9 @@ interface Anomaly {
   description: string;
   commitHash?: string;
   deploymentTime?: string;
+  estimatedCost?: number; // USD per hour
+  resourceImpact?: string; // e.g., "2.5 CPU cores", "4GB RAM"
+  potentialDowntime?: number; // minutes
 }
 
 interface Deployment {
@@ -329,14 +332,74 @@ export default function Dashboard() {
 
       return rawAnomalies.map((a: any) => {
         let type = 'unknown';
-        if (a.metric === 'cpu') type = 'cpu_saturation';
-        else if (a.metric === 'memory') type = 'memory_leak';
-        else if (a.metric === 'latency') type = 'latency_spike';
-        else if (a.metric === 'errorRate') type = 'error_rate';
+        if (a.metric === 'resource_forecast') {
+          type = 'resource_forecast';
+        } else if (a.metric === 'cpu') {
+          type = 'cpu_saturation';
+        } else if (a.metric === 'memory') {
+          type = 'memory_leak';
+        } else if (a.metric === 'latency') {
+          type = 'latency_spike';
+        } else if (a.metric === 'errorRate') {
+          type = 'error_rate';
+        }
 
         let severity = 'medium';
-        if (a.zScore > 3) severity = 'critical';
-        else if (a.zScore > 2) severity = 'high';
+        if (type === 'resource_forecast') {
+          // For forecasts, severity based on time remaining (stored in value)
+          const minsRemaining = a.value;
+          if (minsRemaining < 5) severity = 'critical';
+          else if (minsRemaining < 15) severity = 'high';
+          else severity = 'medium';
+        } else {
+          if (a.zScore > 3) severity = 'critical';
+          else if (a.zScore > 2) severity = 'high';
+        }
+
+        // Use custom description if available, otherwise generate default
+        let description = `${a.metric} val: ${a.value.toFixed(2)} (baseline: ${a.baseline.toFixed(2)})`;
+        if (type === 'resource_forecast') {
+          // Backend should provide description like "CPU projected to hit 100% in ~12 mins"
+          // But fallback if not present
+          description = `Resource exhaustion predicted in ~${Math.round(a.value)} minutes`;
+        }
+
+        // Calculate cost and resource impact estimates
+        let estimatedCost = 0;
+        let resourceImpact = '';
+        let potentialDowntime = 0;
+
+        if (type === 'resource_forecast') {
+          const minsRemaining = a.value;
+          // Cost of emergency scaling or potential outage
+          // Assume $50/hour for emergency response + potential revenue loss
+          estimatedCost = minsRemaining < 15 ? 150 : 50;
+          resourceImpact = a.baseline > 50 ? '4+ CPU cores or 8GB RAM' : '2 CPU cores or 4GB RAM';
+          potentialDowntime = minsRemaining < 5 ? 30 : 0; // Potential outage if not addressed
+        } else if (type === 'cpu_saturation') {
+          // Wasted compute resources
+          const excessUsage = Math.max(0, a.value - a.baseline);
+          estimatedCost = (excessUsage / 100) * 25; // $25/hour per 100% CPU
+          resourceImpact = `${(excessUsage / 25).toFixed(1)} CPU cores`;
+          potentialDowntime = severity === 'critical' ? 15 : 0;
+        } else if (type === 'memory_leak') {
+          const excessMem = Math.max(0, a.value - a.baseline);
+          estimatedCost = (excessMem / 100) * 15; // $15/hour per 100% memory
+          resourceImpact = `${((excessMem / 100) * 8).toFixed(1)}GB RAM`;
+          potentialDowntime = severity === 'critical' ? 20 : 0;
+        } else if (type === 'latency_spike') {
+          // User experience degradation cost
+          const latencyIncrease = a.value - a.baseline;
+          estimatedCost = latencyIncrease > 500 ? 200 : 75; // High latency = lost customers
+          resourceImpact = `${Math.round(latencyIncrease)}ms added latency`;
+          potentialDowntime = 0;
+        } else if (type === 'error_rate') {
+          // Failed requests = lost revenue
+          const errorPercent = a.value;
+          estimatedCost = errorPercent * 50; // $50 per 1% error rate per hour
+          resourceImpact = `${errorPercent.toFixed(2)}% failed requests`;
+          potentialDowntime = severity === 'critical' ? 10 : 0;
+        }
 
         return {
           id: a.id,
@@ -346,8 +409,11 @@ export default function Dashboard() {
           detectedAt: a.timestamp,
           resolved: false,
           confidence: a.confidence ? a.confidence * 100 : 85,
-          description: `${a.metric} val: ${a.value.toFixed(2)} (baseline: ${a.baseline.toFixed(2)})`,
-          commitHash: a.correlatedCommit
+          description,
+          commitHash: a.correlatedCommit,
+          estimatedCost: Math.round(estimatedCost),
+          resourceImpact,
+          potentialDowntime
         } as Anomaly;
       });
     } catch (error) {
@@ -1033,15 +1099,20 @@ export default function Dashboard() {
                   {anomalies.filter(a => !a.resolved).length > 0 ? (
                     anomalies.filter(a => !a.resolved).map((anomaly) => {
                       const service = services.find(s => s.id === anomaly.serviceId);
+                      const isForecast = anomaly.type === 'resource_forecast';
+                      const borderColor = isForecast ? 'border-orange-500/30' : 'border-red-500/20';
+                      const bgColor = isForecast ? 'bg-orange-500/10' : 'bg-red-500/5';
+
                       return (
-                        <div key={anomaly.id} className="p-4 rounded-lg border border-red-500/20 bg-red-500/5">
+                        <div key={anomaly.id} className={`p-4 rounded-lg border ${borderColor} ${bgColor}`}>
                           <div className="flex items-start justify-between mb-3">
                             <div className="flex items-center gap-3">
+                              {isForecast && <Clock className="w-4 h-4 text-orange-400" />}
                               <div className={`px-3 py-1 rounded-full text-xs font-medium ${getSeverityColor(anomaly.severity)}`}>
                                 {anomaly.severity.toUpperCase()}
                               </div>
                               <div className="text-sm text-gray-400">
-                                {service?.name || 'Unknown'} • {anomaly.type.replace('_', ' ')}
+                                {service?.name || 'Unknown'} • {isForecast ? '⏱️ Forecast' : anomaly.type.replace('_', ' ')}
                               </div>
                             </div>
                             <div className="text-sm text-gray-400">
@@ -1050,6 +1121,38 @@ export default function Dashboard() {
                           </div>
 
                           <p className="text-sm mb-3">{anomaly.description}</p>
+
+                          {/* Cost and Impact Estimates */}
+                          {(anomaly.estimatedCost || anomaly.resourceImpact || anomaly.potentialDowntime) && (
+                            <div className="mb-3 p-3 rounded-lg bg-black/30 border border-gray-700/50">
+                              <div className="grid grid-cols-3 gap-3 text-xs">
+                                {anomaly.estimatedCost && anomaly.estimatedCost > 0 && (
+                                  <div className="flex flex-col">
+                                    <span className="text-gray-500 mb-1">Est. Cost Impact</span>
+                                    <span className="text-red-400 font-semibold text-sm">
+                                      ${anomaly.estimatedCost}/hr
+                                    </span>
+                                  </div>
+                                )}
+                                {anomaly.resourceImpact && (
+                                  <div className="flex flex-col">
+                                    <span className="text-gray-500 mb-1">Resource Impact</span>
+                                    <span className="text-yellow-400 font-semibold text-sm">
+                                      {anomaly.resourceImpact}
+                                    </span>
+                                  </div>
+                                )}
+                                {anomaly.potentialDowntime && anomaly.potentialDowntime > 0 && (
+                                  <div className="flex flex-col">
+                                    <span className="text-gray-500 mb-1">Risk: Downtime</span>
+                                    <span className="text-orange-400 font-semibold text-sm">
+                                      ~{anomaly.potentialDowntime} mins
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
 
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-4 text-sm">

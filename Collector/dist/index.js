@@ -152,12 +152,60 @@ function runAnomalyDetection(serviceId, ts) {
                 yield createAnomaly(serviceId, metric, latest[metric], mean, z, ts);
             }
         }
+        /* ---------- FORECASTING (Experimental) ---------- */
+        // Predict if CPU/Memory will hit 100% soon
+        // Simple Linear Regression: y = mx + c
+        const forecastMetrics = ["cpu", "memory"];
+        for (const metric of forecastMetrics) {
+            // Need strict ascending time order for regression
+            const recentPoints = [...window].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            const n = recentPoints.length;
+            if (n < 10)
+                continue;
+            let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+            // Use index as X (0, 1, 2...) for simplicity, assuming roughly uniform sample rate
+            for (let i = 0; i < n; i++) {
+                const x = i;
+                const y = recentPoints[i][metric];
+                sumX += x;
+                sumY += y;
+                sumXY += x * y;
+                sumX2 += x * x;
+            }
+            const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            const currentVal = recentPoints[n - 1][metric];
+            // Only care if trending UP and currently below limit
+            if (slope > 0.1 && currentVal < 98) {
+                const remainingCapacity = 100 - currentVal;
+                const ticksToFull = remainingCapacity / slope;
+                // Convert ticks to minutes (poll interval is 2s approx)
+                // ticks * 2s / 60s
+                const minsToFull = (ticksToFull * 2) / 60;
+                if (minsToFull > 0 && minsToFull < 60) {
+                    console.log(`[Forecast] ${metric} trending up (slope=${slope.toFixed(2)}). Full in ~${minsToFull.toFixed(1)}m`);
+                    // Dedup: Check if we recently alerted on this
+                    const recentForecast = yield prisma.anomaly.findFirst({
+                        where: {
+                            serviceId,
+                            metric: 'resource_forecast',
+                            timestamp: { gt: new Date(Date.now() - ANOMALY_DEDUPE_MS) } // Uses same dedupe window
+                        }
+                    });
+                    if (!recentForecast) {
+                        yield createAnomaly(serviceId, 'resource_forecast', minsToFull, // store minutes as value
+                        slope, // store slope as baseline
+                        0, // no z-score
+                        ts, `${metric.toUpperCase()} projected to hit 100% in ~${Math.round(minsToFull)} mins`);
+                    }
+                }
+            }
+        }
     });
 }
 /* =====================================================
    CREATE + CORRELATE
 ===================================================== */
-function createAnomaly(serviceId, metric, value, baseline, zScore, timestamp) {
+function createAnomaly(serviceId, metric, value, baseline, zScore, timestamp, description) {
     return __awaiter(this, void 0, void 0, function* () {
         const recent = yield prisma.anomaly.findFirst({
             where: {
