@@ -7,26 +7,26 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/* -----------------------------
+/* ================================
    SERVICE REGISTRY
-------------------------------*/
+================================ */
 
 model Service {
-  id         String        @id @default(uuid())
-  name       String        @unique
+  id         String   @id @default(uuid())
+  name       String   @unique
   metricsUrl String
   repoUrl    String?
-  createdAt DateTime      @default(now())
+  createdAt  DateTime @default(now())
 
-  metrics     MetricPoint[]
+  metrics      MetricPoint[]
   changeEvents ChangeEvent[]
-  anomalies   Anomaly[]
-  health      HealthSnapshot[]
+  anomalies    Anomaly[]
+  health       HealthSnapshot[]
 }
 
-/* -----------------------------
+/* ================================
    METRICS TIME SERIES
-------------------------------*/
+================================ */
 
 model MetricPoint {
   id        String   @id @default(uuid())
@@ -44,9 +44,9 @@ model MetricPoint {
   @@index([serviceId, timestamp])
 }
 
-/* -----------------------------
+/* ================================
    DEPLOY / CHANGE EVENTS
-------------------------------*/
+================================ */
 
 model ChangeEvent {
   id        String   @id @default(uuid())
@@ -61,9 +61,9 @@ model ChangeEvent {
   @@index([serviceId, timestamp])
 }
 
-/* -----------------------------
+/* ================================
    ANOMALIES
-------------------------------*/
+================================ */
 
 model Anomaly {
   id        String   @id @default(uuid())
@@ -84,9 +84,9 @@ model Anomaly {
   @@index([serviceId, timestamp])
 }
 
-/* -----------------------------
+/* ================================
    HEALTH SNAPSHOTS
-------------------------------*/
+================================ */
 
 model HealthSnapshot {
   id        String   @id @default(uuid())
