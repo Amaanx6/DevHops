@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/* -----------------------------
+   SERVICE REGISTRY
+------------------------------*/
+
+model Service {
+  id         String        @id @default(uuid())
+  name       String        @unique
+  metricsUrl String
+  repoUrl    String?
+  createdAt DateTime      @default(now())
+
+  metrics     MetricPoint[]
+  changeEvents ChangeEvent[]
+  anomalies   Anomaly[]
+  health      HealthSnapshot[]
+}
+
+/* -----------------------------
+   METRICS TIME SERIES
+------------------------------*/
+
+model MetricPoint {
+  id        String   @id @default(uuid())
+  serviceId String
+
+  cpu       Float
+  memory    Float
+  latency   Float
+  errorRate Float
+
+  timestamp DateTime @default(now())
+
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, timestamp])
+}
+
+/* -----------------------------
+   DEPLOY / CHANGE EVENTS
+------------------------------*/
+
+model ChangeEvent {
+  id        String   @id @default(uuid())
+  serviceId String
+
+  commit    String
+  message   String?
+  timestamp DateTime @default(now())
+
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, timestamp])
+}
+
+/* -----------------------------
+   ANOMALIES
+------------------------------*/
+
+model Anomaly {
+  id        String   @id @default(uuid())
+  serviceId String
+
+  metric    String
+  value     Float
+  baseline  Float
+  zScore    Float
+
+  timestamp DateTime @default(now())
+
+  correlatedCommit String?
+  confidence        Float?
+
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, timestamp])
+}
+
+/* -----------------------------
+   HEALTH SNAPSHOTS
+------------------------------*/
+
+model HealthSnapshot {
+  id        String   @id @default(uuid())
+  serviceId String
+
+  status    String
+  score     Float
+
+  timestamp DateTime @default(now())
+
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId, timestamp])
+}
