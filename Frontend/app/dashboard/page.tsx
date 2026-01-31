@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import axios from 'axios';
-import { 
-  Activity, AlertTriangle, CheckCircle, TrendingUp, TrendingDown, 
-  Zap, GitBranch, Clock, Shield, Cpu, HardDrive, Wifi, 
-  Server, BarChart3, RefreshCw, ChevronRight, Filter, 
+import {
+  Activity, AlertTriangle, CheckCircle, TrendingUp, TrendingDown,
+  Zap, GitBranch, Clock, Shield, Cpu, HardDrive, Wifi,
+  Server, BarChart3, RefreshCw, ChevronRight, Filter,
   Download, Settings, Bell, Search, Users, Calendar,
   ArrowUpRight, ArrowDownRight, Eye, ExternalLink,
   Database, GitPullRequest, AlertCircle, LineChart,
@@ -14,6 +14,9 @@ import {
   DatabaseIcon, AlertOctagon, GitCommit, BarChart
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import {
+  Area, AreaChart, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer
+} from 'recharts';
 
 // Types
 interface Service {
@@ -34,36 +37,17 @@ interface Service {
     throughput: number;
     timestamp: string;
   };
+  history?: RawMetricPoint[];
 }
 
-interface TelemetryPoint {
-  timestamp: string;
+interface RawMetricPoint {
+  id: string;
+  serviceId: string;
   cpu: number;
   memory: number;
   latency: number;
   errorRate: number;
-  throughput: number;
-}
-
-interface MetricsResponse {
-  serviceName: string;
-  data: TelemetryPoint[];
-  current: {
-    cpu: number;
-    memory: number;
-    latency: number;
-    errorRate: number;
-    throughput: number;
-  };
-  summary: {
-    avgCpu: number;
-    avgMemory: number;
-    avgLatency: number;
-    avgErrorRate: number;
-    avgThroughput: number;
-    healthScore: number;
-    status: 'healthy' | 'degrading' | 'critical';
-  };
+  timestamp: string;
 }
 
 interface Anomaly {
@@ -105,21 +89,25 @@ export default function Dashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [backendConnected, setBackendConnected] = useState(false);
-  const [telemetryData, setTelemetryData] = useState<TelemetryPoint[]>([]);
-  
+  const selectedServiceRef = useRef<Service | null>(null);
+
+  // Sync ref with state
+  useEffect(() => {
+    selectedServiceRef.current = selectedService;
+  }, [selectedService]);
+
   // Real-time updates state
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [riskAssessments, setRiskAssessments] = useState<RiskAssessment[]>([]);
   const [lastUpdate, setLastUpdate] = useState<string>('');
-  const [metricsData, setMetricsData] = useState<MetricsResponse | null>(null);
 
   // Mock data for fallback
   const mockServices: Service[] = [
     {
       id: '1',
       name: 'payments',
-      metricsUrl: 'http://localhost:5000/api/metrics/payments',
+      metricsUrl: 'http://localhost:4001/metrics',
       repoUrl: 'https://github.com/devhops/payments',
       registeredAt: '2024-01-15T10:30:00Z',
       lastChecked: new Date().toISOString(),
@@ -138,7 +126,7 @@ export default function Dashboard() {
     {
       id: '2',
       name: 'auth-service',
-      metricsUrl: 'http://localhost:5000/api/metrics/auth',
+      metricsUrl: 'http://localhost:4002/metrics',
       repoUrl: 'https://github.com/devhops/auth',
       registeredAt: '2024-01-10T14:20:00Z',
       lastChecked: new Date().toISOString(),
@@ -157,7 +145,7 @@ export default function Dashboard() {
     {
       id: '3',
       name: 'user-api',
-      metricsUrl: 'http://localhost:5000/api/metrics/user-api',
+      metricsUrl: 'http://localhost:4003/metrics',
       repoUrl: 'https://github.com/devhops/user-api',
       registeredAt: '2024-01-05T09:15:00Z',
       lastChecked: new Date().toISOString(),
@@ -190,72 +178,93 @@ export default function Dashboard() {
     }
   ];
 
-  const mockDeployments: Deployment[] = [
-    {
-      id: 'd1',
-      serviceId: '3',
-      commitHash: 'a1b2c3d4',
-      author: 'Alex Chen',
-      time: new Date(Date.now() - 7200000).toISOString(),
-      riskScore: 84,
-      summary: 'Updated database connection pooling'
-    }
-  ];
-
-  const mockRiskAssessments: RiskAssessment[] = [
-    {
-      serviceId: '3',
-      currentRisk: 84,
-      trend: 'worsening',
-      factors: ['Recent high-risk deployment', 'Latency anomalies detected', 'Memory pressure increasing'],
-      recommendations: ['Rollback v2.1.0 deployment', 'Increase instance count', 'Review database queries']
-    }
-  ];
-
   // Check backend connectivity
   const checkBackend = useCallback(async () => {
     try {
-      const response = await axios.get('http://localhost:5000/api/metrics/payments', {
-        timeout: 5000
+      const response = await axios.get('http://localhost:5000/', {
+        timeout: 3000
       });
       return response.status === 200;
     } catch (error) {
-      console.log('Metrics endpoint not available:', error);
-      return false;
+      try {
+        const response = await axios.get('http://127.0.0.1:5000/', {
+          timeout: 3000
+        });
+        return response.status === 200;
+      } catch (e) {
+        console.log('Backend not available');
+        return false;
+      }
     }
   }, []);
 
-  // Fetch real metrics from backend
+  // Fetch real metrics from backend (adapted to your API format)
   const fetchRealMetrics = useCallback(async (serviceName: string) => {
     try {
-      const response = await axios.get(`http://localhost:5000/api/metrics/${serviceName}`, {
-        params: { range: timeRange }
-      });
-      
-      const metrics: MetricsResponse = response.data;
-      
+      let response;
+      try {
+        response = await axios.get(`http://localhost:5000/api/metrics/${serviceName}`, {
+          timeout: 5000
+        });
+      } catch (e) {
+        // Fallback to 127.0.0.1
+        response = await axios.get(`http://127.0.0.1:5000/api/metrics/${serviceName}`, {
+          timeout: 5000
+        });
+      }
+
+      const rawPoints: RawMetricPoint[] = response.data;
+
+      if (!Array.isArray(rawPoints) || rawPoints.length === 0) {
+        return null;
+      }
+
+      // Calculate metrics from raw data
+      const latest = rawPoints[rawPoints.length - 1];
+      const avgCpu = rawPoints.reduce((sum, p) => sum + p.cpu, 0) / rawPoints.length;
+      const avgMemory = rawPoints.reduce((sum, p) => sum + p.memory, 0) / rawPoints.length;
+      const avgLatency = rawPoints.reduce((sum, p) => sum + p.latency, 0) / rawPoints.length;
+      const avgErrorRate = rawPoints.reduce((sum, p) => sum + p.errorRate, 0) / rawPoints.length;
+
+      // Calculate health score
+      const cpuScore = Math.max(0, 100 - avgCpu);
+      const memoryScore = Math.max(0, 100 - avgMemory);
+      const latencyScore = Math.max(0, 100 - (avgLatency / 10));
+      const errorScore = Math.max(0, 100 - (avgErrorRate * 10));
+
+      const healthScore = Math.round(
+        (cpuScore * 0.25 + memoryScore * 0.25 + latencyScore * 0.3 + errorScore * 0.2)
+      );
+
+      const status: 'healthy' | 'degrading' | 'critical' =
+        healthScore >= 80 ? 'healthy' :
+          healthScore >= 60 ? 'degrading' : 'critical';
+
+      const throughput = latest.cpu / 100 * 2000;
+
       // Update or create service with real metrics
       setServices(prev => {
         const existingService = prev.find(s => s.name === serviceName);
-        
+
         if (existingService) {
-          return prev.map(service => 
-            service.name === serviceName 
+          return prev.map(service =>
+            service.name === serviceName
               ? {
-                  ...service,
-                  currentMetrics: {
-                    cpu: metrics.current.cpu,
-                    memory: metrics.current.memory,
-                    latency: metrics.current.latency,
-                    errorRate: metrics.current.errorRate,
-                    throughput: metrics.current.throughput,
-                    timestamp: new Date().toISOString()
-                  },
-                  health: metrics.summary.status,
-                  healthScore: metrics.summary.healthScore,
-                  uptime: 100 - (metrics.summary.avgErrorRate * 10),
-                  lastChecked: new Date().toISOString()
-                }
+                ...service,
+                currentMetrics: {
+                  cpu: latest.cpu,
+                  memory: latest.memory,
+                  latency: latest.latency,
+                  errorRate: latest.errorRate,
+                  throughput: throughput,
+                  timestamp: latest.timestamp
+                },
+                history: rawPoints,
+                health: status,
+                healthScore: healthScore,
+                uptime: 100 - (avgErrorRate * 10),
+                lastChecked: new Date().toISOString()
+              }
               : service
           );
         } else {
@@ -266,144 +275,183 @@ export default function Dashboard() {
             repoUrl: `https://github.com/devhops/${serviceName}`,
             registeredAt: new Date().toISOString(),
             lastChecked: new Date().toISOString(),
-            health: metrics.summary.status,
-            healthScore: metrics.summary.healthScore,
-            uptime: 100 - (metrics.summary.avgErrorRate * 10),
+            health: status,
+            healthScore: healthScore,
+            uptime: 100 - (avgErrorRate * 10),
             currentMetrics: {
-              cpu: metrics.current.cpu,
-              memory: metrics.current.memory,
-              latency: metrics.current.latency,
-              errorRate: metrics.current.errorRate,
-              throughput: metrics.current.throughput,
-              timestamp: new Date().toISOString()
-            }
+              cpu: latest.cpu,
+              memory: latest.memory,
+              latency: latest.latency,
+              errorRate: latest.errorRate,
+              throughput: throughput,
+              timestamp: latest.timestamp
+            },
+            history: rawPoints
           };
           return [...prev, newService];
         }
       });
-      
-      setTelemetryData(metrics.data);
-      setMetricsData(metrics);
-      return metrics;
+
+      return {
+        current: {
+          cpu: latest.cpu,
+          memory: latest.memory,
+          latency: latest.latency,
+          errorRate: latest.errorRate,
+          throughput: throughput
+        },
+        summary: {
+          avgCpu,
+          avgMemory,
+          avgLatency,
+          avgErrorRate,
+          healthScore,
+          status
+        }
+      };
     } catch (error) {
       console.error(`Failed to fetch metrics for ${serviceName}:`, error);
       return null;
     }
-  }, [timeRange]);
+  }, []);
+
+  const fetchAnomalies = useCallback(async (serviceName: string, serviceId: string) => {
+    try {
+      let response;
+      try {
+        response = await axios.get(`http://localhost:5000/api/anomalies/${serviceName}`, { timeout: 3000 });
+      } catch (e) {
+        response = await axios.get(`http://127.0.0.1:5000/api/anomalies/${serviceName}`, { timeout: 3000 });
+      }
+
+      const rawAnomalies = response.data;
+      if (!Array.isArray(rawAnomalies)) return [];
+
+      return rawAnomalies.map((a: any) => {
+        let type = 'unknown';
+        if (a.metric === 'cpu') type = 'cpu_saturation';
+        else if (a.metric === 'memory') type = 'memory_leak';
+        else if (a.metric === 'latency') type = 'latency_spike';
+        else if (a.metric === 'errorRate') type = 'error_rate';
+
+        let severity = 'medium';
+        if (a.zScore > 3) severity = 'critical';
+        else if (a.zScore > 2) severity = 'high';
+
+        return {
+          id: a.id,
+          serviceId: serviceId,
+          type,
+          severity,
+          detectedAt: a.timestamp,
+          resolved: false,
+          confidence: a.confidence ? a.confidence * 100 : 85,
+          description: `${a.metric} val: ${a.value.toFixed(2)} (baseline: ${a.baseline.toFixed(2)})`,
+          commitHash: a.correlatedCommit
+        } as Anomaly;
+      });
+    } catch (error) {
+      console.error(`Failed to fetch anomalies for ${serviceName}:`, error);
+      return [];
+    }
+  }, []);
 
   // Fetch all real data
-  const fetchAllRealData = useCallback(async () => {
+  const fetchAllRealData = useCallback(async (isBackground = false) => {
     try {
-      setIsLoading(true);
-      
-      const isConnected = await checkBackend();
+      if (!isBackground) {
+        setIsLoading(true);
+      }
+
+      let isConnected = false;
+      let registeredServices: any[] = [];
+
+      // Try fetching services directly to determine connectivity
+      try {
+        const servicesResponse = await axios.get('http://localhost:5000/api/services');
+        registeredServices = servicesResponse.data;
+        isConnected = true;
+      } catch (error) {
+        try {
+          // Fallback to 127.0.0.1
+          const servicesResponse = await axios.get('http://127.0.0.1:5000/api/services');
+          registeredServices = servicesResponse.data;
+          isConnected = true;
+        } catch (e) {
+          console.error('Error fetching services:', e);
+        }
+      }
+
       setBackendConnected(isConnected);
-      
+
       if (!isConnected) {
-        throw new Error('Backend not available');
-      }
-      
-      const defaultMetrics = await fetchRealMetrics('payments');
-      
-      if (defaultMetrics) {
-        const otherServices = ['auth-service', 'user-api'];
-        for (const service of otherServices) {
-          try {
-            await fetchRealMetrics(service);
-          } catch (err) {
-            // Service might not exist
-          }
+        console.log('Backend not connected, using mock data');
+        setServices(mockServices);
+        setAnomalies(mockAnomalies);
+        if (!selectedService) {
+          setSelectedService(mockServices[0]);
         }
-        
-        const detectedAnomalies: Anomaly[] = [];
-        
-        if (defaultMetrics.current.errorRate > 5) {
-          detectedAnomalies.push({
-            id: `anom-${Date.now()}`,
-            serviceId: '1',
-            type: 'error_rate',
-            severity: defaultMetrics.current.errorRate > 10 ? 'critical' : 'high',
-            detectedAt: new Date().toISOString(),
-            resolved: false,
-            confidence: Math.min(95, defaultMetrics.current.errorRate * 8),
-            description: `High error rate detected: ${defaultMetrics.current.errorRate.toFixed(1)}%`
-          });
-        }
-        
-        if (defaultMetrics.current.latency > 500) {
-          detectedAnomalies.push({
-            id: `anom-${Date.now() + 1}`,
-            serviceId: '1',
-            type: 'latency_spike',
-            severity: defaultMetrics.current.latency > 1000 ? 'critical' : 'high',
-            detectedAt: new Date().toISOString(),
-            resolved: false,
-            confidence: Math.min(90, (defaultMetrics.current.latency / 20)),
-            description: `High latency detected: ${defaultMetrics.current.latency.toFixed(0)}ms`
-          });
-        }
-        
-        setAnomalies(detectedAnomalies);
-        
-        const assessments: RiskAssessment[] = services.map(service => {
-          const risk = 100 - service.healthScore;
-          const trend: 'improving' | 'stable' | 'worsening' = 
-            service.healthScore > 80 ? 'improving' : 
-            service.healthScore > 60 ? 'stable' : 'worsening';
-          
-          const currentMetrics = service.currentMetrics || {
-            cpu: 0,
-            memory: 0,
-            latency: 0,
-            errorRate: 0,
-            throughput: 0,
-            timestamp: ''
-          };
-          
-          const factors = [
-            risk > 70 ? 'Critical health degradation' : 
-            risk > 40 ? 'Moderate health issues' : 'Minor issues detected',
-            currentMetrics.errorRate > 5 ? `Error rate: ${currentMetrics.errorRate.toFixed(1)}%` : '',
-            currentMetrics.latency > 300 ? `Latency: ${currentMetrics.latency.toFixed(0)}ms` : ''
-          ].filter(Boolean);
-          
-          const recommendations = [
-            risk > 70 ? 'Immediate investigation required' : 
-            risk > 40 ? 'Schedule maintenance soon' : 'Monitor closely',
-            currentMetrics.memory > 85 ? 'Optimize memory usage' : '',
-            currentMetrics.cpu > 80 ? 'Scale up resources' : ''
-          ].filter(Boolean);
-          
-          return {
-            serviceId: service.id,
-            currentRisk: risk,
-            trend,
-            factors,
-            recommendations
-          };
-        });
-        
-        setRiskAssessments(assessments);
-        
-        if (!selectedService && services.length > 0) {
-          setSelectedService(services[0]);
-        }
-        
         setLastUpdate(new Date().toISOString());
+        return;
       }
-      
+
+      // Backend is connected
+      if (registeredServices.length > 0) {
+        let allAnomalies: Anomaly[] = [];
+
+        // Fetch metrics and anomalies for each registered service
+        for (const svc of registeredServices) {
+          await fetchRealMetrics(svc.name);
+          const svcAnomalies = await fetchAnomalies(svc.name, svc.id);
+          allAnomalies = [...allAnomalies, ...svcAnomalies];
+        }
+
+        // Sort anomalies by date desc
+        allAnomalies.sort((a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime());
+        setAnomalies(allAnomalies);
+
+        // Auto-select first service if none selected (using Ref to avoid stale closure issues)
+        if (!selectedServiceRef.current && registeredServices.length > 0) {
+          const firstSvc = registeredServices[0];
+          const bootstrapService: Service = {
+            id: firstSvc.id || 'temp',
+            name: firstSvc.name,
+            metricsUrl: firstSvc.metricsUrl,
+            repoUrl: firstSvc.repoUrl,
+            health: 'healthy',
+            healthScore: 100,
+            uptime: 100,
+            registeredAt: new Date().toISOString(),
+            lastChecked: new Date().toISOString(),
+            currentMetrics: undefined,
+            history: []
+          };
+          setSelectedService(bootstrapService);
+        }
+      } else {
+        console.log("No services registered in backend");
+      }
+
+
+
+
+
+
+
+      setLastUpdate(new Date().toISOString());
+
     } catch (error) {
       console.error('Failed to fetch real data:', error);
       setBackendConnected(false);
       setServices(mockServices);
       setAnomalies(mockAnomalies);
-      setDeployments(mockDeployments);
-      setRiskAssessments(mockRiskAssessments);
       setSelectedService(mockServices[0]);
     } finally {
-      setIsLoading(false);
+      if (!isBackground) {
+        setIsLoading(false);
+      }
     }
-  }, [checkBackend, fetchRealMetrics, services, selectedService]);
+  }, [fetchRealMetrics, fetchAnomalies]);
 
   // Load service from localStorage
   useEffect(() => {
@@ -412,9 +460,10 @@ export default function Dashboard() {
       try {
         const parsedService = JSON.parse(savedService);
         const serviceName = parsedService.name || 'payments';
-        
+
+        // Check if service already exists
         const existingService = services.find(s => s.name === serviceName);
-        
+
         if (!existingService) {
           const newService: Service = {
             id: parsedService.id || Date.now().toString(),
@@ -435,48 +484,62 @@ export default function Dashboard() {
               timestamp: new Date().toISOString()
             }
           };
-          
+
           setServices(prev => [...prev, newService]);
           setSelectedService(newService);
-          fetchRealMetrics(serviceName);
+
+          if (backendConnected) {
+            fetchRealMetrics(serviceName);
+          }
         }
       } catch (error) {
         console.error('Error loading service:', error);
       }
     }
-  }, [fetchRealMetrics, services]);
+  }, []);
 
   // Initialize dashboard
   useEffect(() => {
     const initDashboard = async () => {
       await fetchAllRealData();
-      
-      if (backendConnected) {
-        const interval = setInterval(async () => {
-          if (selectedService) {
-            await fetchRealMetrics(selectedService.name);
-          }
-          await fetchAllRealData();
-        }, 15000);
-        
-        return () => clearInterval(interval);
-      }
+
+      const interval = setInterval(async () => {
+        const currentService = selectedServiceRef.current;
+        // Only fetch metrics for selected service if we are connected
+        // But we rely on fetchAllRealData to update connection status
+        // So we just try. fetchRealMetrics handles its own errors anyway.
+        if (currentService) {
+          await fetchRealMetrics(currentService.name);
+        }
+        await fetchAllRealData(true);
+      }, 2000);
+
+      return () => clearInterval(interval);
     };
 
     initDashboard();
-  }, [backendConnected, selectedService, fetchAllRealData, fetchRealMetrics]);
+  }, []); // Run once on mount
 
   // Handle service selection
   const handleServiceSelect = async (service: Service) => {
     setSelectedService(service);
-    
+
     if (backendConnected) {
-      const metrics = await fetchRealMetrics(service.name);
-      if (metrics) {
-        setMetricsData(metrics);
-      }
+      await fetchRealMetrics(service.name);
     }
   };
+
+  // Sync selectedService with services updates
+  useEffect(() => {
+    if (selectedService) {
+      const updatedService = services.find(s => s.id === selectedService.id);
+      // Only update if the object reference has changed and it's actually different
+      // (checking timestamp or history length might be safer but ref check usually works with immutable updates)
+      if (updatedService && updatedService !== selectedService) {
+        setSelectedService(updatedService);
+      }
+    }
+  }, [services]);
 
   // Helper functions
   const getHealthColor = (health: string) => {
@@ -546,16 +609,16 @@ export default function Dashboard() {
       errorRate: { good: 1, warning: 5 },
       throughput: { good: 500, warning: 300 }
     };
-    
+
     const { good, warning } = thresholds[type];
     const isGood = safeValue <= good;
     const isWarning = safeValue > good && safeValue <= warning;
-    
+
     return (
       <span className={isGood ? 'text-green-500' : isWarning ? 'text-yellow-500' : 'text-red-500'}>
-        {type === 'errorRate' ? `${safeValue.toFixed(2)}%` : 
-         type === 'latency' ? `${safeValue.toFixed(0)}ms` :
-         type === 'throughput' ? `${safeValue.toFixed(0)}/s` : `${safeValue.toFixed(1)}%`}
+        {type === 'errorRate' ? `${safeValue.toFixed(2)}%` :
+          type === 'latency' ? `${safeValue.toFixed(0)}ms` :
+            type === 'throughput' ? `${safeValue.toFixed(0)}/s` : `${safeValue.toFixed(1)}%`}
       </span>
     );
   };
@@ -596,14 +659,14 @@ export default function Dashboard() {
                 </p>
               </div>
             </div>
-            
+
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2 text-sm text-gray-400">
                 <Clock className="w-4 h-4" />
                 {lastUpdate ? `Updated: ${new Date(lastUpdate).toLocaleTimeString()}` : 'Loading...'}
               </div>
-              
-              <button 
+
+              <button
                 onClick={handleRefresh}
                 disabled={isRefreshing}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-700 hover:bg-gray-900 transition-colors ${isRefreshing ? 'opacity-50' : ''}`}
@@ -615,8 +678,8 @@ export default function Dashboard() {
                 )}
                 Refresh
               </button>
-              
-              <button 
+
+              <button
                 onClick={() => router.push('/')}
                 className="px-4 py-2 rounded-lg bg-gradient-to-br from-yellow-500 to-yellow-600 text-black font-medium text-sm hover:opacity-90 transition-opacity"
               >
@@ -650,12 +713,12 @@ export default function Dashboard() {
                   {backendConnected ? '✨ Live Telemetry Intelligence' : '✨ Telemetry Intelligence Dashboard'}
                 </h2>
                 <p className="text-gray-400 mt-1">
-                  {backendConnected 
-                    ? `Connected to ${selectedService?.name || 'payments'} metrics endpoint`
+                  {backendConnected
+                    ? `Connected to ${selectedService?.name || 'service'} metrics endpoint`
                     : 'Simulated telemetry data with anomaly detection'}
                 </p>
               </div>
-              
+
               <div className="flex items-center gap-3">
                 <select
                   value={timeRange}
@@ -691,7 +754,7 @@ export default function Dashboard() {
                   {selectedService ? `Monitoring: ${selectedService.name}` : 'No service selected'}
                 </div>
               </div>
-              
+
               <div className="bg-gradient-to-br from-gray-900 to-black border border-gray-800 rounded-xl p-6">
                 <div className="flex items-center justify-between mb-4">
                   <div className="p-2 rounded-lg bg-green-500/10">
@@ -704,7 +767,7 @@ export default function Dashboard() {
                 <div className="text-2xl font-bold">{calculateOverallHealth()}%</div>
                 <div className="text-sm text-gray-400">Overall health score</div>
               </div>
-              
+
               <div className="bg-gradient-to-br from-gray-900 to-black border border-gray-800 rounded-xl p-6">
                 <div className="flex items-center justify-between mb-4">
                   <div className="p-2 rounded-lg bg-yellow-500/10">
@@ -717,7 +780,7 @@ export default function Dashboard() {
                 <div className="text-2xl font-bold">{getActiveAnomalies()}</div>
                 <div className="text-sm text-gray-400">Active anomalies</div>
               </div>
-              
+
               <div className="bg-gradient-to-br from-gray-900 to-black border border-gray-800 rounded-xl p-6">
                 <div className="flex items-center justify-between mb-4">
                   <div className="p-2 rounded-lg bg-purple-500/10">
@@ -738,6 +801,122 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Left Column - Services & Metrics */}
             <div className="lg:col-span-2 space-y-8">
+
+              {/* Detailed Metrics Chart */}
+              {selectedService && selectedService.history && (
+                <div className="bg-gradient-to-br from-gray-900 to-black border border-gray-800 rounded-xl p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-lg font-semibold">
+                      <span className="text-yellow-500">{selectedService.name}</span> Performance History
+                    </h3>
+                    <div className="flex gap-4 text-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                        <span className="text-gray-400">CPU</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded-full bg-purple-500"></div>
+                        <span className="text-gray-400">Memory</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded-full bg-orange-500"></div>
+                        <span className="text-gray-400">Latency</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="h-[250px] w-full mb-6">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={selectedService.history}>
+                        <defs>
+                          <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                          </linearGradient>
+                          <linearGradient id="colorMemory" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                        <XAxis
+                          dataKey="timestamp"
+                          stroke="#666"
+                          tick={{ fill: '#666' }}
+                          tickFormatter={(str) => new Date(str).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        />
+                        <YAxis stroke="#666" tick={{ fill: '#666' }} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#111', borderColor: '#333' }}
+                          itemStyle={{ color: '#ccc' }}
+                          labelStyle={{ color: '#666' }}
+                          labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="cpu"
+                          stroke="#3b82f6"
+                          fillOpacity={1}
+                          fill="url(#colorCpu)"
+                          name="CPU Usage"
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="memory"
+                          stroke="#a855f7"
+                          fillOpacity={1}
+                          fill="url(#colorMemory)"
+                          name="Memory Usage"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Latency & Error Rate Chart */}
+                  <div className="h-[200px] w-full border-t border-gray-800 pt-6">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={selectedService.history}>
+                        <defs>
+                          <linearGradient id="colorLatency" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#f97316" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
+                          </linearGradient>
+                          <linearGradient id="colorError" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                        <XAxis
+                          dataKey="timestamp"
+                          hide={true}
+                        />
+                        <YAxis stroke="#666" tick={{ fill: '#666' }} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#111', borderColor: '#333' }}
+                          itemStyle={{ color: '#ccc' }}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="latency"
+                          stroke="#f97316"
+                          fillOpacity={1}
+                          fill="url(#colorLatency)"
+                          name="Latency (ms)"
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="errorRate"
+                          stroke="#ef4444"
+                          fillOpacity={1}
+                          fill="url(#colorError)"
+                          name="Error Rate (%)"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
               {/* Service Health Cards */}
               <div className="bg-gradient-to-br from-gray-900 to-black border border-gray-800 rounded-xl p-6">
                 <div className="flex items-center justify-between mb-6">
@@ -749,7 +928,7 @@ export default function Dashboard() {
                     </code>
                   </div>
                 </div>
-                
+
                 <div className="space-y-4">
                   {services.map((service) => {
                     const currentMetrics = service.currentMetrics || {
@@ -760,16 +939,15 @@ export default function Dashboard() {
                       throughput: 0,
                       timestamp: new Date().toISOString()
                     };
-                    
+
                     return (
                       <div
                         key={service.id}
                         onClick={() => handleServiceSelect(service)}
-                        className={`p-4 rounded-lg border cursor-pointer transition-all hover:scale-[1.02] ${
-                          selectedService?.id === service.id 
-                            ? 'border-yellow-500 bg-yellow-500/5' 
-                            : 'border-gray-800 hover:border-gray-700'
-                        }`}
+                        className={`p-4 rounded-lg border cursor-pointer transition-all hover:scale-[1.02] ${selectedService?.id === service.id
+                          ? 'border-yellow-500 bg-yellow-500/5'
+                          : 'border-gray-800 hover:border-gray-700'
+                          }`}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
@@ -788,7 +966,7 @@ export default function Dashboard() {
                               </div>
                             </div>
                           </div>
-                          
+
                           <div className="flex items-center gap-4">
                             <div className="text-right">
                               <div className="text-sm text-gray-400">Last checked</div>
@@ -797,7 +975,7 @@ export default function Dashboard() {
                             <ChevronRight className="w-5 h-5 text-gray-400" />
                           </div>
                         </div>
-                        
+
                         {/* Current Metrics */}
                         <div className="mt-4 grid grid-cols-5 gap-2 text-sm">
                           <div className="text-center">
@@ -821,7 +999,7 @@ export default function Dashboard() {
                             <div className="font-medium">{currentMetrics.throughput.toFixed(0)}/s</div>
                           </div>
                         </div>
-                        
+
                         {/* Health Score Bar */}
                         <div className="mt-4">
                           <div className="flex justify-between text-sm mb-1">
@@ -829,12 +1007,11 @@ export default function Dashboard() {
                             <span>{service.healthScore}/100</span>
                           </div>
                           <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                            <div 
-                              className={`h-full rounded-full ${
-                                service.healthScore >= 80 ? 'bg-green-500' :
+                            <div
+                              className={`h-full rounded-full ${service.healthScore >= 80 ? 'bg-green-500' :
                                 service.healthScore >= 60 ? 'bg-yellow-500' :
-                                'bg-red-500'
-                              }`}
+                                  'bg-red-500'
+                                }`}
                               style={{ width: `${service.healthScore}%` }}
                             />
                           </div>
@@ -851,7 +1028,7 @@ export default function Dashboard() {
                   <h3 className="text-lg font-semibold">🚨 Detected Anomalies</h3>
                   <span className="text-sm text-gray-400">Based on telemetry analysis</span>
                 </div>
-                
+
                 <div className="space-y-4">
                   {anomalies.filter(a => !a.resolved).length > 0 ? (
                     anomalies.filter(a => !a.resolved).map((anomaly) => {
@@ -871,9 +1048,9 @@ export default function Dashboard() {
                               {new Date(anomaly.detectedAt).toLocaleTimeString()}
                             </div>
                           </div>
-                          
+
                           <p className="text-sm mb-3">{anomaly.description}</p>
-                          
+
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-4 text-sm">
                               {anomaly.commitHash && (
@@ -887,7 +1064,7 @@ export default function Dashboard() {
                                 <span>{anomaly.confidence}% confidence</span>
                               </div>
                             </div>
-                            
+
                             <button className="text-sm text-yellow-500 hover:text-yellow-400 flex items-center gap-1">
                               Investigate <ArrowUpRight className="w-4 h-4" />
                             </button>
@@ -911,7 +1088,7 @@ export default function Dashboard() {
               {/* System Overview */}
               <div className="bg-gradient-to-br from-gray-900 to-black border border-gray-800 rounded-xl p-6">
                 <h3 className="text-lg font-semibold mb-6">🧱 TELEMETRY PIPELINE</h3>
-                
+
                 <div className="space-y-4">
                   <div className="p-4 rounded-lg bg-gray-900/50">
                     <div className="flex items-center gap-3 mb-3">
@@ -927,10 +1104,10 @@ export default function Dashboard() {
                       <code className="block p-2 bg-black rounded text-xs mb-2">
                         GET {selectedService?.metricsUrl || 'http://localhost:5000/api/metrics/:service'}
                       </code>
-                      <p>Returns: CPU, Memory, Latency, Error Rate, Throughput</p>
+                      <p>Returns: CPU, Memory, Latency, Error Rate</p>
                     </div>
                   </div>
-                  
+
                   <div className="p-4 rounded-lg bg-gray-900/50">
                     <div className="flex items-center gap-3 mb-3">
                       <div className="p-2 rounded-lg bg-purple-500/10">
@@ -965,7 +1142,7 @@ export default function Dashboard() {
                   <h3 className="text-lg font-semibold">📊 Risk Assessment</h3>
                   <Shield className="w-5 h-5 text-yellow-500" />
                 </div>
-                
+
                 <div className="space-y-4">
                   {selectedService && (
                     <div className="p-4 rounded-lg border border-gray-700">
@@ -976,7 +1153,7 @@ export default function Dashboard() {
                           <span className="text-sm text-gray-400">/100 risk</span>
                         </div>
                       </div>
-                      
+
                       <div className="flex items-center gap-2 mb-3">
                         <span className="text-sm text-gray-400">Status:</span>
                         <div className={`flex items-center gap-1 ${getHealthColor(selectedService.health)}`}>
@@ -984,7 +1161,7 @@ export default function Dashboard() {
                           <span className="capitalize">{selectedService.health}</span>
                         </div>
                       </div>
-                      
+
                       {selectedService.currentMetrics && (
                         <div className="space-y-2 mb-3">
                           <div className="text-sm font-medium text-gray-400">Current Metrics:</div>
@@ -1008,7 +1185,7 @@ export default function Dashboard() {
                           </div>
                         </div>
                       )}
-                      
+
                       <button className="mt-3 text-sm text-yellow-500 hover:text-yellow-400 w-full text-left">
                         View detailed metrics →
                       </button>
@@ -1020,7 +1197,7 @@ export default function Dashboard() {
               {/* Endpoint Status */}
               <div className="bg-gradient-to-br from-gray-900 to-black border border-gray-800 rounded-xl p-6">
                 <h3 className="text-lg font-semibold mb-6">🔌 Endpoint Status</h3>
-                
+
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -1031,7 +1208,7 @@ export default function Dashboard() {
                       {backendConnected ? 'Connected' : 'Using Mock Data'}
                     </span>
                   </div>
-                  
+
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className={`w-2 h-2 rounded-full ${services.length > 0 ? 'bg-green-500' : 'bg-gray-500'}`} />
@@ -1039,7 +1216,7 @@ export default function Dashboard() {
                     </div>
                     <span className="text-sm">{services.length}</span>
                   </div>
-                  
+
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className={`w-2 h-2 rounded-full ${getActiveAnomalies() === 0 ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -1049,7 +1226,7 @@ export default function Dashboard() {
                       {getActiveAnomalies()}
                     </span>
                   </div>
-                  
+
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-blue-500" />
@@ -1058,12 +1235,14 @@ export default function Dashboard() {
                     <span className="text-sm">{backendConnected ? '15s' : 'Manual'}</span>
                   </div>
                 </div>
-                
+
                 <div className="mt-6 pt-6 border-t border-gray-800">
                   <button
                     onClick={() => {
                       if (backendConnected && selectedService) {
                         window.open(selectedService.metricsUrl, '_blank');
+                      } else {
+                        window.open('http://localhost:5000/', '_blank');
                       }
                     }}
                     className="w-full py-2 px-4 rounded-lg border border-gray-700 hover:bg-gray-900 transition-colors text-sm flex items-center justify-center gap-2"
@@ -1085,7 +1264,7 @@ export default function Dashboard() {
           >
             <div className="bg-gradient-to-r from-yellow-500/10 to-yellow-500/5 border border-yellow-500/20 rounded-xl p-8">
               <h2 className="text-2xl font-bold mb-6 text-center">🔥 REAL-TIME TELEMETRY INTELLIGENCE</h2>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-4">
                   <div className="flex items-start gap-4">
@@ -1095,11 +1274,11 @@ export default function Dashboard() {
                     <div>
                       <h4 className="font-semibold mb-2">✨ Live Metrics Processing</h4>
                       <p className="text-sm text-gray-300">
-                        Real-time analysis of CPU, memory, latency, error rates, and throughput from your service endpoints.
+                        Real-time analysis of CPU, memory, latency, error rates from your service endpoints.
                       </p>
                     </div>
                   </div>
-                  
+
                   <div className="flex items-start gap-4">
                     <div className="p-3 rounded-lg bg-blue-500/10">
                       <Target className="w-6 h-6 text-blue-500" />
@@ -1107,12 +1286,12 @@ export default function Dashboard() {
                     <div>
                       <h4 className="font-semibold mb-2">✨ Automated Anomaly Detection</h4>
                       <p className="text-sm text-gray-300">
-                        Intelligent detection of performance regressions, error spikes, and resource issues with confidence scoring.
+                        Intelligent detection of performance regressions, error spikes, and resource issues.
                       </p>
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="space-y-4">
                   <div className="flex items-start gap-4">
                     <div className="p-3 rounded-lg bg-green-500/10">
@@ -1121,11 +1300,11 @@ export default function Dashboard() {
                     <div>
                       <h4 className="font-semibold mb-2">✨ Predictive Health Scoring</h4>
                       <p className="text-sm text-gray-300">
-                        Dynamic health scores based on real metrics with trend analysis and predictive failure alerts.
+                        Dynamic health scores based on real metrics with trend analysis.
                       </p>
                     </div>
                   </div>
-                  
+
                   <div className="flex items-start gap-4">
                     <div className="p-3 rounded-lg bg-purple-500/10">
                       <Shield className="w-6 h-6 text-purple-500" />
@@ -1133,19 +1312,19 @@ export default function Dashboard() {
                     <div>
                       <h4 className="font-semibold mb-2">✨ Unified Risk Assessment</h4>
                       <p className="text-sm text-gray-300">
-                        Comprehensive risk evaluation with actionable recommendations for service reliability improvement.
+                        Comprehensive risk evaluation with actionable recommendations.
                       </p>
                     </div>
                   </div>
                 </div>
               </div>
-              
+
               {backendConnected && (
                 <div className="mt-8 p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
                   <div className="flex items-center justify-center gap-3">
                     <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                     <span className="text-green-500 font-medium">
-                      Connected to real-time metrics endpoint: {selectedService?.metricsUrl}
+                      Connected to real-time metrics: http://localhost:5000/api/metrics
                     </span>
                   </div>
                 </div>
